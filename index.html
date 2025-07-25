@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>每月考勤</title>
+    <!-- 引入 Vue 2 -->
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <!-- 引入 Element UI -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/element-ui/lib/theme-chalk/index.css"
+    />
+    <script src="https://unpkg.com/element-ui/lib/index.js"></script>
+    <!-- 引入 ExcelJS -->
+    <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
+    <!-- 引入 FileSaver -->
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <!-- 引入 Dayjs -->
+    <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.9/dayjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chinese-days/dist/index.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <el-button type="primary" @click="sendMail" size="mini" class="mt-20">
+        发送邮件
+      </el-button>
+      <el-button type="primary" @click="downExcel" size="mini" class="mt-20">
+        导出
+      </el-button>
+      <el-row :gutter="40" class="mt-20">
+        <el-col :span="6" v-for="col in columns">
+          <div>
+            {{col.title}}
+            <component
+              :is="col.type"
+              v-model="model[col.prop]"
+              v-bind="col.attrs"
+              style="max-width: 220px"
+              v-on="col.on"
+            />
+          </div>
+        </el-col>
+      </el-row>
+
+      <div style="border: #ccc solid 1px; border-radius: 4px" class="mt-20">
+        <el-calendar v-model="model.month">
+          <!-- 这里使用的是 2.5 slot 语法，对于新项目请使用 2.6 slot 语法-->
+          <template slot="dateCell" slot-scope="{date, data}">
+            <span
+              :class="[data.isSelected ? 'is-selected' : '','is-circle', getBgColor(data)]"
+            >
+              {{ data.day.split('-').slice(-1)[0] }}
+            </span>
+            <span style="font-size: 12px">
+              <el-checkbox
+                v-if="dayOfDutys[data.day]"
+                v-model="dayOfDutys[data.day].isChecked"
+                @change="handleCheckboxChange($event,data.day)"
+              >
+                {{dayOfDutys[data.day].label}}
+              </el-checkbox>
+
+              {{getData(data)}}
+              <el-switch
+                :disabled="!dayOfDutys[data.day].isChecked"
+                v-if="showSwitch(data)"
+                v-model="dayOfDutys[data.day].askForLeave"
+                active-text="半天"
+                inactive-text="全天"
+                @change="doChange($event,data.day)"
+              />
+            </span>
+          </template>
+        </el-calendar>
+      </div>
+    </div>
+    <style>
+      .el-row {
+        margin-bottom: 20px;
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+      .el-col {
+        border-radius: 4px;
+      }
+      .bg-purple-dark {
+        background: #99a9bf;
+      }
+      .bg-purple {
+        background: #d3dce6;
+      }
+      .bg-purple-light {
+        background: #e5e9f2;
+      }
+      .grid-content {
+        border-radius: 4px;
+        min-height: 36px;
+      }
+      .row-bg {
+        padding: 10px 0;
+        background-color: #f9fafc;
+      }
+      .mt-20 {
+        margin-top: 20px;
+      }
+      .is-circle {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%; /* 设置为圆形 */
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background-color: #f0f0f0; /* 默认背景颜色 */
+        margin: 0;
+        cursor: pointer;
+      }
+      .half-day {
+      }
+      .work-day {
+        background-color: #75d20f; /* 默认背景颜色 */
+        color: #fff;
+      }
+
+      .over-time {
+        background-color: #1e6dfe; /* 默认背景颜色 */
+        color: #fff;
+      }
+    </style>
+    <script>
+      async function readFileToArrayBuffer(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const arrayBuffer = e.target.result;
+              resolve(arrayBuffer);
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.onerror = (error) => {
+            reject(error);
+          };
+          reader.readAsArrayBuffer(file);
+        });
+      }
+      async function readFile(accept = "", multiple = false) {
+        const inputEl = document.createElement("input");
+        inputEl.setAttribute("type", "file");
+        inputEl.setAttribute("accept", accept);
+        inputEl.setAttribute("multiple", !!multiple);
+        return new Promise((resolve, reject) => {
+          inputEl.addEventListener("change", (e) => {
+            resolve(multiple ? inputEl.files : inputEl.files[0]);
+            window.removeEventListener("click", onWindowClick, true);
+          });
+          inputEl.click();
+
+          function onWindowClick() {
+            if (!inputEl.value) {
+              reject(new Error("用户取消选择"));
+            }
+            window.removeEventListener("click", onWindowClick, true);
+          }
+          setTimeout(() => {
+            window.addEventListener("click", onWindowClick, true);
+          }, 100);
+        });
+      }
+      new Vue({
+        el: "#app",
+        data() {
+          return {
+            model: {
+              name: "孟令峰",
+              workRole: "前端开发",
+              month: dayjs().format("YYYY-MM"),
+              to: "3573294503@qq.com",
+            },
+            columns: [
+              {
+                title: "工作角色",
+                type: "el-input",
+                prop: "workRole",
+                attrs: { size: "mini", placeholder: "请输入工作角色" },
+              },
+              {
+                title: "姓名",
+                type: "el-input",
+                prop: "name",
+                attrs: { size: "mini", placeholder: "请输入姓名" },
+              },
+              {
+                title: "邮箱",
+                type: "el-input",
+                prop: "to",
+                attrs: { size: "mini", placeholder: "请输入邮箱" },
+              },
+            ],
+            dayOfDutys: {},
+          };
+        },
+        mounted() {
+          this.columns.forEach((col) => {
+            this.$set(this.model, col.prop, this.model[col.prop] || "");
+          });
+        },
+        computed: {
+          month() {
+            return dayjs(this.model.month).format("YYYY-MM");
+          },
+        },
+        watch: {
+          month: {
+            handler(newValue) {
+              console.log(newValue);
+              const monthKey = `${this.model.name}_${newValue}`;
+              let daysOfMonth = null;
+              daysOfMonth = JSON.parse(
+                localStorage.getItem(monthKey) || "null"
+              );
+              console.log(daysOfMonth);
+              if (!daysOfMonth) {
+                daysOfMonth = Array.from(
+                  { length: dayjs(newValue).daysInMonth() },
+                  (_, index) =>
+                    dayjs(newValue)
+                      .set("date", index + 1)
+                      .format("YYYY-MM-DD")
+                ).reduce((acc, day) => {
+                  return {
+                    ...acc,
+                    [day]: {
+                      isChecked: false,
+                      day,
+                      label: "",
+                      askForLeave: false,
+                    },
+                  };
+                }, {});
+                localStorage.setItem(monthKey, JSON.stringify(daysOfMonth));
+              }
+
+              this.$set(this, "dayOfDutys", daysOfMonth);
+            },
+            immediate: true,
+          },
+        },
+        methods: {
+          doChange(val, day) {
+            const monthKey = `${this.model.name}_${dayjs(day).format(
+              "YYYY-MM"
+            )}`;
+            localStorage.setItem(monthKey, JSON.stringify(this.dayOfDutys));
+          },
+          showSwitch(data) {
+            if (!chineseDays.isWorkday(data.day)) return false;
+            return (
+              this.dayOfDutys[data.day] && this.dayOfDutys[data.day].isChecked
+            );
+          },
+          handleCheckboxChange(val, day) {
+            this.dayOfDutys[day].isChecked = val;
+            this.dayOfDutys[day].label = chineseDays.isWorkday(day)
+              ? "请假"
+              : "加班";
+            if (!val) {
+              this.dayOfDutys[day].label = "";
+            }
+            const monthKey = `${this.model.name}_${dayjs(day).format(
+              "YYYY-MM"
+            )}`;
+            localStorage.setItem(monthKey, JSON.stringify(this.dayOfDutys));
+          },
+          getData(data) {
+            const detail = chineseDays.getDayDetail(data.day);
+            const names = detail.name.split(",");
+            return detail.work ? "" : names.length > 1 ? names[1] : names[0];
+          },
+          getBgColor(data) {
+            const { day, type } = data;
+
+            if (type !== "current-month") {
+              return {};
+            }
+            return {
+              "work-day":
+                !this.dayOfDutys[day].isChecked && chineseDays.isWorkday(day),
+              "over-time":
+                this.dayOfDutys[day].isChecked && !chineseDays.isWorkday(day),
+              "half-day":
+                chineseDays.isWorkday(day) && this.dayOfDutys[day].askForLeave,
+            };
+          },
+          async sendMail() {
+            const { blob, name, subject, text } =
+              await this.exportExcelTemplate();
+            // 创建 FormData 对象
+            const formData = new FormData();
+            formData.append("to", this.model.to || "3573294503@qq.com");
+            formData.append("subject", subject);
+            formData.append("text", text);
+            formData.append("file", blob, name);
+            formData.append("name", name);
+            try {
+              // 发送请求
+              const response = await fetch(
+                "http://localhost:3000/api/send-email",
+                {
+                  method: "POST",
+                  body: formData, // 使用 FormData 对象作为请求体
+                  // 注意：在使用 FormData 时，不需要手动设置 Content-Type 头
+                  // 因为浏览器会自动设置正确的 multipart/form-data 边界
+                }
+              );
+
+              if (!response.ok) {
+                // 如果响应状态码不是 2xx，抛出错误
+                throw new Error(`HTTP error! status: ${response.status}`);
+              }
+
+              // 解析响应体（如果需要的话）
+              const data = await response.json(); // 或者 response.text() 等，取决于响应内容类型
+
+              this.$message.success("Email sent successfully");
+              return data; // 返回响应数据（如果需要的话）
+            } catch (error) {
+              this.$message.error("Email sending failed" + error.message);
+              throw error; // 可以选择抛出错误，以便调用者可以进一步处理
+            }
+          },
+          async downExcel() {
+            const { blob, name } = await this.exportExcelTemplate();
+            saveAs(blob, name);
+          },
+          async exportExcelTemplate() {
+            const curMonth = this.model.month;
+            // 创建一个新的工作簿
+            const workbook = new ExcelJS.Workbook();
+            const [err, tplArrayBuffer] = await fetch(
+              "https://zhubazhai.github.io/checking-in/attendanceTemplate.xlsx"
+            )
+              .then((response) => {
+                if (!response.ok) {
+                  throw new Error("Network response was not ok");
+                }
+                return [null, response.arrayBuffer()]; // 指定返回类型为 ArrayBuffer
+              })
+              .catch((error) => [error, null]);
+            if (err) {
+              this.$message.error(err);
+              return;
+            }
+
+            // const tplArrayBuffer = await readFileToArrayBuffer(file);
+
+            await workbook.xlsx.load(tplArrayBuffer);
+            const worksheet = workbook.worksheets[0]; // 取第一个工作表
+
+            worksheet.getCell("B5").value = this.model.workRole;
+            worksheet.getCell("B4").value = dayjs(curMonth).format("MMM-YYYY");
+            const monthZh = dayjs(curMonth).format("M月份");
+            worksheet.getCell("F4").value = monthZh;
+            worksheet.getCell("F5").value = dayjs(curMonth)
+              .startOf("month")
+              .format("YYYY/M/D");
+            worksheet.getCell("F6").value = dayjs(curMonth)
+              .endOf("month")
+              .format("YYYY/M/D");
+
+            // 修改整行内容
+            const monthArray = new Array(31).fill("").map((_, index) => {
+              if (index < dayjs(curMonth).daysInMonth()) {
+                let date = Object.values(this.dayOfDutys)[index];
+
+                const isWorkday = chineseDays.isWorkday(date.day)
+                  ? !date.isChecked
+                  : date.isChecked;
+
+                let fullDay = isWorkday ? 1 : "";
+
+                let halfDay = "";
+                if (
+                  chineseDays.isWorkday(date.day) &&
+                  date.isChecked &&
+                  date.askForLeave
+                ) {
+                  fullDay = 0.5;
+                  halfDay = 1;
+                  date.label = "请假半天";
+                }
+                console.log(date.askForLeave, "date.day", fullDay, halfDay);
+
+                return [
+                  date.day,
+                  !!fullDay ? `${this.model.workRole}与技术支持` : "",
+                  !!fullDay ? `Y` : "",
+                  fullDay,
+                  halfDay,
+                  !!fullDay ? `Y` : "",
+                  date.label,
+                ];
+              }
+              return new Array(7).fill("");
+            });
+            console.log(
+              monthArray.filter((array) => array[1]),
+              "monthArray"
+            );
+            //
+            worksheet.eachRow((row, rowNum) => {
+              if (rowNum >= 9 && rowNum <= 39) {
+                row.eachCell((cell, colNumber) => {
+                  cell.value = monthArray[rowNum - 9][colNumber - 1];
+                  if (colNumber === 1) {
+                    console.log(cell.value, "cell.value");
+                  }
+                });
+              }
+            });
+            const totalDays = monthArray.filter((array) => array[1]).length;
+            const blob = new Blob([await workbook.xlsx.writeBuffer()]);
+
+            const name = `普菲特工作记录-${this.model.name}-${dayjs(
+              curMonth
+            ).format("YYYY年MM月")}-${totalDays}天.xlsx`;
+            return {
+              blob,
+              name,
+              subject: `TCL-IT技术服务2024-2026人力`,
+              text: `
+外包项目-${this.model.name}顾问-${monthZh}-${totalDays}天
+您好：     
+麻烦确认一下本人${monthZh}工时，具体信息如下，工单详见附件，多谢。
+项目号：41401150
+项目名称：TCL-IT技术服务2024-2026人力外包项目
+工作职责：新方舟前端模块顾问
+顾问姓名：${this.model.name}
+工作月份：${dayjs(curMonth).format("YYYY年MM月")}
+工作人天：${totalDays}
+
+深圳普菲特信息科技股份有限公司	
+${this.model.name}		`,
+            };
+            console.log(this.model, "blob");
+
+            console.warn();
+          },
+        },
+      });
+    </script>
+  </body>
+</html>
